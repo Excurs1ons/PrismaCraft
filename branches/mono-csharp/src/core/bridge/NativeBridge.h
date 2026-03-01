@@ -1,312 +1,212 @@
 #pragma once
 
-#include "../../../../../../shared/include/PrismaCraft/Core/BlockPos.h"
-#include "../../../../../../shared/include/PrismaCraft/Core/BlockState.h"
+#include <PrismaCraft/PrismaCraft.h>
 #include <mono/jit/jit.h>
 #include <mono/metadata/assembly.h>
 #include <mono/metadata/mono-config.h>
 #include <string>
+#include <memory>
 #include <unordered_map>
-#include <functional>
 
 namespace PrismaCraft {
-    namespace Mono {
 
-        // 前向声明
-        class MonoRuntime;
+// Forward declarations
+class Level;
+class Entity;
+class BlockPos;
 
-        /**
-         * @brief C# 到 C++ 桥接层
-         *
-         * 这个模块提供了 C# 脚本与 C++ 引擎之间的互操作接口。
-         * 对应 Minecraft 的脚本系统，但使用 Mono 运行时。
-         */
-        class NativeBridge {
-        public:
-            /**
-             * @brief 初始化桥接层
-             * 注册所有内部调用（Internal Call）
-             */
-            static void initialize(MonoRuntime* runtime);
+/**
+ * Mono runtime manager for C# scripting
+ * Handles initialization and cleanup of Mono runtime
+ */
+class PRISMACRAFT_API MonoRuntime {
+public:
+    MonoRuntime(const std::string& assemblyPath);
+    ~MonoRuntime();
 
-            /**
-             * @brief 关闭桥接层
-             */
-            static void shutdown();
+    // Initialize runtime
+    bool init();
 
-            // ========== 世界管理桥接 ==========
+    // Load assembly
+    bool loadAssembly(const std::string& assemblyName);
 
-            /**
-             * @brief 获取方块状态 - C# 调用
-             * 对应 C#: WorldManager.GetBlock(int x, int y, int z)
-             */
-            static void WorldManager_GetBlock(
-                int32_t x, int32_t y, int32_t z,
-                uint8_t* blockType,
-                uint32_t* stateId
-            );
+    // Get class from assembly
+    MonoClass* getClass(const std::string& namespace_, const std::string& className);
 
-            /**
-             * @brief 设置方块状态 - C# 调用
-             */
-            static void WorldManager_SetBlock(
-                int32_t x, int32_t y, int32_t z,
-                uint8_t blockType,
-                uint32_t stateId
-            );
+    // Create object instance
+    MonoObject* createInstance(MonoClass* klass);
 
-            /**
-             * @brief 加载区块 - C# 调用
-             */
-            static void WorldManager_LoadChunk(int32_t chunkX, int32_t chunkZ);
+    // Call method
+    MonoObject* callMethod(MonoObject* object, const std::string& methodName, void** params = nullptr, int paramCount = 0);
 
-            /**
-             * @brief 卸载区块 - C# 调用
-             */
-            static void WorldManager_UnloadChunk(int32_t chunkX, int32_t chunkZ);
+    // Get field value
+    MonoObject* getField(MonoObject* object, const std::string& fieldName);
 
-            // ========== 实体管理桥接 ==========
+    // Set field value
+    void setField(MonoObject* object, const std::string& fieldName, MonoObject* value);
 
-            /**
-             * @brief 创建玩家实体 - C# 调用
-             */
-            static uint32_t EntityManager_CreatePlayer(const char* name);
+    // Get domain
+    MonoDomain* getDomain() const { return domain; }
 
-            /**
-             * @brief 获取实体位置 - C# 调用
-             */
-            static void Entity_GetPosition(uint32_t entityId, float* x, float* y, float* z);
+    // Is initialized
+    bool isInitialized() const { return initialized; }
 
-            /**
-             * @brief 设置实体位置 - C# 调用
-             */
-            static void Entity_SetPosition(uint32_t entityId, float x, float y, float z);
+private:
+    std::string assemblyPath;
+    MonoDomain* domain = nullptr;
+    MonoAssembly* assembly = nullptr;
+    MonoImage* image = nullptr;
+    bool initialized = false;
 
-            /**
-             * @brief 获取实体旋转 - C# 调用
-             */
-            static void Entity_GetRotation(uint32_t entityId, float* yaw, float* pitch);
+    bool initDomain();
+    bool openAssembly();
+};
 
-            /**
-             * @brief 设置实体旋转 - C# 调用
-             */
-            static void Entity_SetRotation(uint32_t entityId, float yaw, float pitch);
+/**
+ * Native bridge for C# <-> C++ interop
+ * Provides methods for C# scripts to interact with native C++ engine
+ */
+class PRISMACRAFT_API NativeBridge {
+public:
+    static NativeBridge& getInstance();
 
-            // ========== 输入系统桥接 ==========
+    // Initialize bridge with Mono runtime
+    void init(MonoRuntime* runtime);
 
-            /**
-             * @brief 检查键是否按下 - C# 调用
-             */
-            static bool Input_IsKeyDown(int32_t keyCode);
+    // Level access
+    void setLevel(Level* level);
+    Level* getLevel();
 
-            /**
-             * @brief 检查键是否刚刚按下 - C# 调用
-             */
-            static bool Input_IsKeyPressed(int32_t keyCode);
+    // Entity management
+    int createEntity(const std::string& typeName);
+    void removeEntity(int entityId);
+    Entity* getEntity(int entityId);
 
-            /**
-             * @brief 检查键是否刚刚释放 - C# 调用
-             */
-            static bool Input_IsKeyReleased(int32_t keyCode);
+    // Block access
+    int getBlock(int x, int y, int z);
+    void setBlock(int x, int y, int z, int blockId);
 
-            /**
-             * @brief 获取鼠标位置 - C# 调用
-             */
-            static void Input_GetMousePosition(float* x, float* y);
+    // Chunk operations
+    void loadChunk(int chunkX, int chunkZ);
+    void unloadChunk(int chunkX, int chunkZ);
+    bool isChunkLoaded(int chunkX, int chunkZ);
 
-            /**
-             * @brief 检查鼠标按钮是否按下 - C# 调用
-             */
-            static bool Input_IsMouseButtonPressed(int32_t button);
+    // Input handling - bridge C++ input to C#
+    void setKeyDown(int keyCode, bool state);
+    void setMousePosition(int x, int y);
+    void setMouseButton(int button, bool state);
 
-            // ========== 时间系统桥接 ==========
+    // Time
+    float getDeltaTime();
+    long getGameTime();
 
-            /**
-             * @brief 获取 Delta Time - C# 调用
-             */
-            static float Time_GetDeltaTime();
+    // Register C# callbacks
+    void registerUpdateCallback(MonoObject* delegate);
+    void registerFixedUpdateCallback(MonoObject* delegate);
+    void registerRenderCallback(MonoObject* delegate);
 
-            /**
-             * @brief 获取游戏总时间 - C# 调用
-             */
-            static float Time_GetTime();
+    // Call registered callbacks
+    void callUpdateCallbacks(float deltaTime);
+    void callFixedUpdateCallbacks(float fixedDeltaTime);
+    void callRenderCallbacks(float deltaTime);
 
-            // ========== 日志系统桥接 ==========
+    // Cleanup
+    void cleanup();
 
-            /**
-             * @brief 输出日志 - C# 调用
-             */
-            static void Debug_Log(const char* message);
-            static void Debug_LogWarning(const char* message);
-            static void Debug_LogError(const char* message);
+private:
+    NativeBridge() = default;
+    ~NativeBridge() = default;
 
-        private:
-            NativeBridge() = default;
+    // Prevent copying
+    NativeBridge(const NativeBridge&) = delete;
+    NativeBridge& operator=(const NativeBridge&) = delete;
 
-            /**
-             * @brief 注册内部调用
-             */
-            static void registerInternalCalls(MonoRuntime* runtime);
+    MonoRuntime* monoRuntime = nullptr;
+    Level* level = nullptr;
 
-            /**
-             * @brief 注册 WorldManager 相关内部调用
-             */
-            static void registerWorldManagerInternalCalls(MonoRuntime* runtime);
+    std::unordered_map<int, Entity*> entities;
+    int nextEntityId = 1;
 
-            /**
-             * @brief 注册 EntityManager 相关内部调用
-             */
-            static void registerEntityManagerInternalCalls(MonoRuntime* runtime);
+    // Callback delegates
+    std::vector<MonoObject*> updateCallbacks;
+    std::vector<MonoObject*> fixedUpdateCallbacks;
+    std::vector<MonoObject*> renderCallbacks;
+};
 
-            /**
-             * @brief 注册 Input 相关内部调用
-             */
-            static void registerInputInternalCalls(MonoRuntime* runtime);
+/**
+ * C# wrapper for native types
+ */
+namespace CSWrappers {
 
-            /**
-             * @brief 注册 Time 相关内部调用
-             */
-            static void registerTimeInternalCalls(MonoRuntime* runtime);
+/**
+ * BlockPos wrapper for C#
+ */
+class PRISMACRAFT_API BlockPosWrapper {
+public:
+    static MonoObject* create(int x, int y, int z);
+    static std::tuple<int, int, int> get(MonoObject* obj);
+};
 
-            /**
-             * @brief 注册 Debug 相关内部调用
-             */
-            static void registerDebugInternalCalls(MonoRuntime* runtime);
+/**
+ * Vec3 wrapper for C#
+ */
+class PRISMACRAFT_API Vec3Wrapper {
+public:
+    static MonoObject* create(float x, float y, float z);
+    static std::tuple<float, float, float> get(MonoObject* obj);
+};
 
-            static MonoRuntime* s_runtime;
-        };
+/**
+ * Entity wrapper for C#
+ */
+class PRISMACRAFT_API EntityWrapper {
+public:
+    static MonoObject* wrap(Entity* entity);
+    static Entity* unwrap(MonoObject* obj);
+};
 
-        /**
-         * @brief C# 对象包装器
-         *
-         * 用于在 C++ 中持有和操作 C# 对象
-         */
-        class CSharpObject {
-        public:
-            CSharpObject() = default;
+/**
+ * Level wrapper for C#
+ */
+class PRISMACRAFT_API LevelWrapper {
+public:
+    static MonoObject* wrap(Level* level);
+    static Level* unwrap(MonoObject* obj);
+};
 
-            /**
-             * @brief 从 MonoObject 创建
-             */
-            explicit CSharpObject(MonoObject* obj) : m_object(obj) {}
+} // namespace CSWrappers
 
-            /**
-             * @brief 获取底层的 MonoObject
-             */
-            MonoObject* get() const noexcept { return m_object; }
+/**
+ * Internal calls exported to C#
+ * These are called directly from C# scripts
+ */
+class PRISMACRAFT_API MonoInternalCalls {
+public:
+    // Block operations
+    static int Internal_GetBlock(int x, int y, int z);
+    static void Internal_SetBlock(int x, int y, int z, int blockId);
 
-            /**
-             * @brief 检查是否为空
-             */
-            bool isEmpty() const noexcept { return m_object == nullptr; }
+    // Chunk operations
+    static void Internal_LoadChunk(int chunkX, int chunkZ);
+    static void Internal_UnloadChunk(int chunkX, int chunkZ);
+    static bool Internal_IsChunkLoaded(int chunkX, int chunkZ);
 
-            /**
-             * @brief 调用 C# 方法
-             */
-            MonoObject* callMethod(const char* methodName, int paramCount, MonoObject** params);
+    // Entity operations
+    static int Internal_CreateEntity(MonoString* typeName);
+    static void Internal_RemoveEntity(int entityId);
+    static MonoObject* Internal_GetEntity(int entityId);
 
-            /**
-             * @brief 获取字段值
-             */
-            MonoObject* getField(const char* fieldName);
+    // Time
+    static float Internal_GetDeltaTime();
+    static long Internal_GetGameTime();
 
-            /**
-             * @brief 设置字段值
-             */
-            void setField(const char* fieldName, MonoObject* value);
+    // Input
+    static bool Internal_IsKeyDown(int keyCode);
+    static void Internal_GetMousePosition(int* x, int* y);
+    static bool Internal_IsMouseButtonDown(int button);
 
-            /**
-             * @brief 转换为特定类型
-             */
-            template<typename T>
-            T* as() const {
-                return static_cast<T*>(m_object);
-            }
+    // Register internal calls with Mono
+    static void registerInternalCalls(MonoDomain* domain);
+};
 
-        protected:
-            MonoObject* m_object = nullptr;
-            MonoClass* m_class = nullptr;
-        };
-
-        /**
-         * @brief C# 字符串包装器
-         */
-        class CSharpString : public CSharpObject {
-        public:
-            /**
-             * @brief 从 std::string 创建 C# 字符串
-             */
-            static CSharpString fromUTF8(const std::string& str);
-
-            /**
-             * @brief 转换为 std::string
-             */
-            std::string toUTF8() const;
-
-        private:
-            CSharpString(MonoString* str) : CSharpString(reinterpret_cast<MonoObject*>(str)) {}
-        };
-
-        /**
-         * @brief C# 数组包装器
-         */
-        template<typename T>
-        class CSharpArray : public CSharpObject {
-        public:
-            CSharpArray() = default;
-
-            /**
-             * @brief 创建指定大小的数组
-             */
-            static CSharpArray create(size_t length);
-
-            /**
-             * @brief 从指针创建数组
-             */
-            static CSharpArray fromPointer(const T* data, size_t length);
-
-            /**
-             * @brief 获取数组长度
-             */
-            size_t length() const;
-
-            /**
-             * @brief 获取数组元素
-             */
-            T get(size_t index) const;
-
-            /**
-             * @brief 设置数组元素
-             */
-            void set(size_t index, T value);
-
-            /**
-             * @brief 转换为 std::vector
-             */
-            std::vector<T> toVector() const;
-        };
-
-        /**
-         * @brief C# 托管字符串包装器（用于指针传递）
-         *
-         * 注意：这只是辅助类型，实际的字符串传递使用 MonoString
-         */
-        struct MonoStringWrapper {
-            /**
-             * @brief 从 C# 字符串获取 UTF-8 字符串
-             */
-            static std::string toUTF8(MonoString* monoString);
-
-            /**
-             * @brief 从 UTF-8 字符串创建 C# 字符串
-             */
-            static MonoString* fromUTF8(const std::string& str);
-
-            /**
-             * @brief 释放 C# 字符串（如果需要）
-             */
-            static void free(MonoString* monoString);
-        };
-
-    } // namespace Mono
 } // namespace PrismaCraft

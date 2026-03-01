@@ -1,477 +1,347 @@
-// PrismaCraft.Scripts - C# 游戏逻辑脚本
-// 这些脚本继承自引擎的 ScriptBehaviour
-
+using System;
 using PrismaCraft.Core;
-using PrismaEngine;
 
 namespace PrismaCraft.Scripts
 {
     /// <summary>
-    /// 玩家控制器 - 对应 Minecraft: Player
-    ///
-    /// 处理玩家输入、移动、方块交互等
+    /// Player controller - handles player input, movement, and interaction
+    /// Corresponds to: net.minecraft.server.level.ServerPlayer
     /// </summary>
-    public class PlayerController : ScriptBehaviour
+    public class PlayerController
     {
-        // 移动参数
+        private WorldManager world;
+        private WorldManager.Entity playerEntity;
+        private WorldManager.BlockPos playerBlockPos;
+
+        // Movement
         private float moveSpeed = 4.5f;
-        private float sprintSpeed = 5.6f;
-        private float sneakSpeed = 1.3f;
-        private float jumpForce = 1.25f; // 约 8 block/s² 的重力下跳 1.25m
+        private float jumpForce = 8.0f;
+        private float gravity = -20.0f;
+        private bool isGrounded = true;
 
-        // 玩家状态
-        private bool isOnGround = false;
-        private bool isSprinting = false;
-        private bool isSneaking = false;
+        // Input state
+        private bool forward, backward, left, right, jump, sprint;
 
-        // 视角
-        private float yaw = 0f;
-        private float pitch = 0f;
-        private const float maxPitch = 89f;
-        private const float mouseSensitivity = 0.2f;
+        // Camera
+        private float cameraYaw = 0;
+        private float cameraPitch = 0;
+        private const float MAX_PITCH = 89f;
+        private const float MIN_PITCH = -89f;
 
-        // 物理状态
-        private Vector3 velocity = Vector3.zero;
+        // Block interaction
+        private float reachDistance = 5f;
+        private WorldManager.BlockPos? targetedBlock = null;
 
         /// <summary>
-        /// 脚本启动时调用
+        /// Constructor
         /// </summary>
-        public void Start()
+        public PlayerController(WorldManager world)
         {
-            Debug.Log("PlayerController initialized");
+            this.world = world;
+            InitializePlayer();
         }
 
         /// <summary>
-        /// 每帧调用
+        /// Initialize player entity
         /// </summary>
-        public void Update(float deltaTime)
+        private void InitializePlayer()
+        {
+            var spawn = world.GetSpawnPoint();
+            playerEntity = new WorldManager.Entity
+            {
+                Id = 1,
+                Uuid = Guid.NewGuid().ToString(),
+                Name = "Player",
+                PosX = spawn.X,
+                PosY = spawn.Y,
+                PosZ = spawn.Z,
+                VelX = 0,
+                VelY = 0,
+                VelZ = 0,
+                Yaw = 0,
+                Pitch = 0,
+                IsOnGround = true,
+                IsRemoved = false,
+                World = world
+            };
+
+            UpdatePlayerBlockPos();
+            WorldManager.Debug.LogInfo("Player initialized at spawn point");
+        }
+
+        /// <summary>
+        /// Update player block position from floating position
+        /// </summary>
+        private void UpdatePlayerBlockPos()
+        {
+            playerBlockPos = new WorldManager.BlockPos(
+                (int)Math.Floor(playerEntity.PosX),
+                (int)Math.Floor(playerEntity.PosY),
+                (int)Math.Floor(playerEntity.PosZ)
+            );
+        }
+
+        /// <summary>
+        /// Update controller - call each frame
+        /// </summary>
+        public void Update()
         {
             HandleInput();
-            UpdateMovement(deltaTime);
-            HandleBlockInteraction();
+            UpdateMovement();
+            UpdateCamera();
+            CheckBlockInteraction();
         }
 
         /// <summary>
-        /// 处理输入
+        /// Handle input
         /// </summary>
         private void HandleInput()
         {
-            // 跑步/潜行切换
-            if (Input.IsKeyPressed(KeyCode.Control))
-            {
-                isSprinting = true;
-            }
-            else if (Input.IsKeyReleased(KeyCode.Control))
-            {
-                isSprinting = false;
-            }
+            // Keyboard input (WASD)
+            forward = WorldManager.Input.IsKeyDown(87); // W
+            backward = WorldManager.Input.IsKeyDown(83); // S
+            left = WorldManager.Input.IsKeyDown(65); // A
+            right = WorldManager.Input.IsKeyDown(68); // D
+            jump = WorldManager.Input.IsKeyDown(32); // Space
+            sprint = WorldManager.Input.IsKeyDown(340); // Left Shift or Ctrl
 
-            if (Input.IsKeyPressed(KeyCode.Shift))
-            {
-                isSneaking = true;
-            }
-            else if (Input.IsKeyReleased(KeyCode.Shift))
-            {
-                isSneaking = false;
-            }
+            // Mouse input
+            float sensitivity = 0.1f;
+            cameraYaw -= WorldManager.Input.MouseDeltaX * sensitivity;
+            cameraPitch -= WorldManager.Input.MouseDeltaY * sensitivity;
+            cameraPitch = Math.Clamp(cameraPitch, MIN_PITCH, MAX_PITCH);
 
-            // 跳跃
-            if (Input.IsKeyPressed(KeyCode.Space) && isOnGround)
-            {
-                velocity.y = jumpForce;
-                isOnGround = false;
-            }
+            // Update entity rotation
+            playerEntity.Yaw = cameraYaw;
+            playerEntity.Pitch = cameraPitch;
         }
 
         /// <summary>
-        /// 更新移动
+        /// Update movement
         /// </summary>
-        private void UpdateMovement(float deltaTime)
+        private void UpdateMovement()
         {
-            // 计算移动方向
-            Vector3 moveDirection = Vector3.zero;
+            float dt = WorldManager.Time.DeltaTime;
+            if (dt <= 0) return;
 
-            // WASD 移动（相对于视角）
-            if (Input.IsKeyDown(KeyCode.W)) moveDirection += GetForwardFlat();
-            if (Input.IsKeyDown(KeyCode.S)) moveDirection -= GetForwardFlat();
-            if (Input.IsKeyDown(KeyCode.A)) moveDirection -= GetRightFlat();
-            if (Input.IsKeyDown(KeyCode.D)) moveDirection += GetRightFlat();
+            float speed = moveSpeed;
+            if (sprint) speed *= 1.5f;
 
-            // 归一化移动方向
-            if (moveDirection.magnitude > 0.1f)
+            // Calculate movement direction based on camera yaw
+            float yawRad = cameraYaw * (float)Math.PI / 180f;
+            float sinYaw = (float)Math.Sin(yawRad);
+            float cosYaw = (float)Math.Cos(yawRad);
+
+            // Forward/backward
+            if (forward)
             {
-                moveDirection = moveDirection.normalized;
+                playerEntity.VelX += sinYaw * speed * dt;
+                playerEntity.VelZ += cosYaw * speed * dt;
+            }
+            if (backward)
+            {
+                playerEntity.VelX -= sinYaw * speed * dt;
+                playerEntity.VelZ -= cosYaw * speed * dt;
             }
 
-            // 应用速度
-            float currentSpeed = GetCurrentSpeed();
-            velocity.x = moveDirection.x * currentSpeed;
-            velocity.z = moveDirection.z * currentSpeed;
-
-            // 应用重力
-            velocity.y -= 30.0f * deltaTime; // Minecraft 重力约 30 block/s²
-
-            // 更新位置
-            Vector3 newPos = transform.position + velocity * deltaTime;
-
-            // 碰撞检测和响应
-            newPos = HandleCollision(newPos);
-
-            // 检查是否着地
-            CheckGrounded(newPos);
-
-            // 应用位置
-            transform.position = newPos;
-        }
-
-        /// <summary>
-        /// 获取当前速度
-        /// </summary>
-        private float GetCurrentSpeed()
-        {
-            if (isSneaking) return sneakSpeed;
-            if (isSprinting) return sprintSpeed;
-            return moveSpeed;
-        }
-
-        /// <summary>
-        /// 获取水平方向的前方向量
-        /// </summary>
-        private Vector3 GetForwardFlat()
-        {
-            Vector3 forward = transform.forward;
-            forward.y = 0;
-            return forward.normalized;
-        }
-
-        /// <summary>
-        /// 获取水平方向的右方向量
-        /// </summary>
-        private Vector3 GetRightFlat()
-        {
-            Vector3 right = transform.right;
-            right.y = 0;
-            return right.normalized;
-        }
-
-        /// <summary>
-        /// 处理碰撞
-        /// </summary>
-        private Vector3 HandleCollision(Vector3 newPos)
-        {
-            // 简化的 AABB 碰撞检测
-            // 实际实现需要检查周围的方块
-
-            // X 轴碰撞
-            if (CheckCollisionAt(new Vector3(newPos.x, transform.position.y, transform.position.z)))
+            // Strafe left/right
+            if (left)
             {
-                newPos.x = transform.position.x;
-                velocity.x = 0;
+                playerEntity.VelX -= cosYaw * speed * dt;
+                playerEntity.VelZ += sinYaw * speed * dt;
+            }
+            if (right)
+            {
+                playerEntity.VelX += cosYaw * speed * dt;
+                playerEntity.VelZ -= sinYaw * speed * dt;
             }
 
-            // Y 轴碰撞
-            if (CheckCollisionAt(new Vector3(newPos.x, newPos.y, transform.position.z)))
+            // Apply gravity
+            playerEntity.VelY += gravity * dt;
+
+            // Jump
+            if (jump && isGrounded)
             {
-                newPos.y = transform.position.y;
-                velocity.y = 0;
+                playerEntity.VelY = jumpForce * dt;
+                isGrounded = false;
             }
 
-            // Z 轴碰撞
-            if (CheckCollisionAt(new Vector3(newPos.x, newPos.y, newPos.z)))
+            // Apply velocity with collision detection
+            float newX = playerEntity.PosX + playerEntity.VelX;
+            float newY = playerEntity.PosY + playerEntity.VelY;
+            float newZ = playerEntity.PosZ + playerEntity.VelZ;
+
+            // Simple collision check
+            if (!CheckCollision(newX, playerEntity.PosY, playerEntity.PosZ))
             {
-                newPos.z = transform.position.z;
-                velocity.z = 0;
+                playerEntity.PosX = newX;
+            }
+            else
+            {
+                playerEntity.VelX = 0;
             }
 
-            return newPos;
-        }
-
-        /// <summary>
-        /// 检查指定位置是否碰撞
-        /// </summary>
-        private bool CheckCollisionAt(Vector3 pos)
-        {
-            // 检查玩家包围盒与方块的碰撞
-            BlockPos blockPos = new BlockPos(
-                Mathf.FloorToInt(pos.x),
-                Mathf.FloorToInt(pos.y),
-                Mathf.FloorToInt(pos.z)
-            );
-
-            BlockType block = WorldManager.Instance.GetBlock(blockPos.X, blockPos.Y, blockPos.Z);
-            return block != BlockType.Air && IsSolid(block);
-        }
-
-        /// <summary>
-        /// 检查方块是否是实体的
-        /// </summary>
-        private bool IsSolid(BlockType block)
-        {
-            // 简化版本，实际应该查询方块属性
-            return block != BlockType.Air &&
-                   block != BlockType.Water &&
-                   block != BlockType.Lava;
-        }
-
-        /// <summary>
-        /// 检查是否着地
-        /// </summary>
-        private void CheckGrounded(Vector3 pos)
-        {
-            BlockPos feetPos = new BlockPos(
-                Mathf.FloorToInt(pos.x),
-                Mathf.FloorToInt(pos.y - 0.2f),
-                Mathf.FloorToInt(pos.z)
-            );
-
-            BlockType blockBelow = WorldManager.Instance.GetBlock(feetPos.X, feetPos.Y, feetPos.Z);
-            isOnGround = IsSolid(blockBelow);
-        }
-
-        /// <summary>
-        /// 处理方块交互
-        /// </summary>
-        private void HandleBlockInteraction()
-        {
-            // 左键破坏方块
-            if (Input.IsMouseButtonPressed(0))
+            if (!CheckCollision(playerEntity.PosX, newY, playerEntity.PosZ))
             {
-                BlockPos targetBlock = GetTargetBlock();
-                if (targetBlock.X != 0 || targetBlock.Y != 0 || targetBlock.Z != 0)
+                playerEntity.PosY = newY;
+                isGrounded = false;
+            }
+            else
+            {
+                if (playerEntity.VelY < 0)
                 {
-                    BreakBlock(targetBlock);
+                    isGrounded = true;
                 }
+                playerEntity.VelY = 0;
             }
 
-            // 右键放置方块
-            if (Input.IsMouseButtonPressed(1))
+            if (!CheckCollision(playerEntity.PosX, playerEntity.PosY, newZ))
             {
-                BlockPos targetBlock = GetTargetBlock();
-                BlockPos placePos = targetBlock + GetTargetFaceNormal();
-                PlaceBlock(placePos, BlockType.Stone);
+                playerEntity.PosZ = newZ;
             }
+            else
+            {
+                playerEntity.VelZ = 0;
+            }
+
+            // Damping
+            playerEntity.VelX *= 0.9f;
+            playerEntity.VelZ *= 0.9f;
+
+            UpdatePlayerBlockPos();
         }
 
         /// <summary>
-        /// 获取玩家注视的方块（简化版射线检测）
+        /// Check collision at position
         /// </summary>
-        private BlockPos GetTargetBlock()
+        private bool CheckCollision(float x, float y, float z)
         {
-            // 简化版本：直接返回玩家前方的方块
-            Vector3 rayOrigin = transform.position;
-            Vector3 rayDirection = transform.forward;
+            // Check player bounding box (0.6x1.8x0.6)
+            float halfWidth = 0.3f;
+            float height = 1.8f;
 
-            // 简单的步进式射线检测
-            const float maxDistance = 5f;
-            const float stepSize = 0.1f;
-            int steps = Mathf.FloorToInt(maxDistance / stepSize);
-
-            for (int i = 0; i < steps; i++)
+            for (int bx = (int)Math.Floor(x - halfWidth); bx <= (int)Math.Floor(x + halfWidth); bx++)
             {
-                Vector3 currentPos = rayOrigin + rayDirection * (i * stepSize);
-                BlockPos blockPos = new BlockPos(
-                    Mathf.FloorToInt(currentPos.x),
-                    Mathf.FloorToInt(currentPos.y),
-                    Mathf.FloorToInt(currentPos.z)
-                );
-
-                BlockType block = WorldManager.Instance.GetBlock(blockPos.X, blockPos.Y, blockPos.Z);
-                if (block != BlockType.Air)
+                for (int bz = (int)Math.Floor(z - halfWidth); bz <= (int)Math.Floor(z + halfWidth); bz++)
                 {
-                    return blockPos;
-                }
-            }
-
-            return new BlockPos(0, -1, 0); // 无效位置
-        }
-
-        /// <summary>
-        /// 获取目标面的法线方向（简化版）
-        /// </summary>
-        private BlockPos GetTargetFaceNormal()
-        {
-            // 简化版本：返回上方向
-            return new BlockPos(0, 1, 0);
-        }
-
-        /// <summary>
-        /// 破坏方块
-        /// </summary>
-        private void BreakBlock(BlockPos pos)
-        {
-            WorldManager.Instance.SetBlock(pos.X, pos.Y, pos.Z, BlockType.Air);
-            Debug.Log($"Broke block at ({pos.X}, {pos.Y}, {pos.Z})");
-        }
-
-        /// <summary>
-        /// 放置方块
-        /// </summary>
-        private void PlaceBlock(BlockPos pos, BlockType blockType)
-        {
-            // 检查位置是否有效
-            BlockType currentBlock = WorldManager.Instance.GetBlock(pos.X, pos.Y, pos.Z);
-            if (currentBlock == BlockType.Air)
-            {
-                WorldManager.Instance.SetBlock(pos.X, pos.Y, pos.Z, blockType);
-                Debug.Log($"Placed block at ({pos.X}, {pos.Y}, {pos.Z})");
-            }
-        }
-    }
-
-    /// <summary>
-    /// 世界生成器 - 对应 Minecraft: ChunkGenerator
-    ///
-    /// 使用多线程生成区块数据
-    /// </summary>
-    public class WorldGenerator : ScriptBehaviour
-    {
-        private int seed = 42;
-        private System.Threading.Thread[] generationThreads;
-        private System.Collections.Concurrent.ConcurrentQueue<ChunkGenerationTask> taskQueue;
-        private bool isRunning = false;
-
-        /// <summary>
-        /// 区块生成任务
-        /// </summary>
-        public struct ChunkGenerationTask
-        {
-            public int ChunkX;
-            public int ChunkZ;
-            public System.Action<bool> Callback;
-        }
-
-        public void Start()
-        {
-            Debug.Log("WorldGenerator initialized with seed: " + seed);
-
-            // 启动多线程生成
-            int threadCount = System.Environment.ProcessorCount;
-            generationThreads = new System.Threading.Thread[threadCount];
-            taskQueue = new System.Collections.Concurrent.ConcurrentQueue<ChunkGenerationTask>();
-            isRunning = true;
-
-            for (int i = 0; i < threadCount; i++)
-            {
-                generationThreads[i] = new System.Threading.Thread(GenerationWorker);
-                generationThreads[i].IsBackground = true;
-                generationThreads[i].Start();
-            }
-
-            Debug.Log($"Started {threadCount} chunk generation threads");
-        }
-
-        public void Update(float deltaTime)
-        {
-            // 检查任务队列并处理完成的任务
-        }
-
-        public void OnDestroy()
-        {
-            isRunning = false;
-
-            // 等待所有线程结束
-            foreach (var thread in generationThreads)
-            {
-                if (thread.IsAlive)
-                {
-                    thread.Join(1000);
-                }
-            }
-        }
-
-        /// <summary>
-        /// 添加区块生成任务
-        /// </summary>
-        public void QueueChunkGeneration(int chunkX, int chunkZ, System.Action<bool> callback)
-        {
-            ChunkGenerationTask task = new ChunkGenerationTask
-            {
-                ChunkX = chunkX,
-                ChunkZ = chunkZ,
-                Callback = callback
-            };
-
-            taskQueue.Enqueue(task);
-        }
-
-        /// <summary>
-        /// 生成工作线程
-        /// </summary>
-        private void GenerationWorker()
-        {
-            while (isRunning)
-            {
-                ChunkGenerationTask task;
-                if (taskQueue.TryDequeue(out task))
-                {
-                    bool success = GenerateChunk(task.ChunkX, task.ChunkZ);
-                    task.Callback?.Invoke(success);
-                }
-                else
-                {
-                    // 队列为空，等待一小段时间
-                    System.Threading.Thread.Sleep(10);
-                }
-            }
-        }
-
-        /// <summary>
-        /// 生成区块数据（在后台线程执行）
-        /// </summary>
-        private bool GenerateChunk(int chunkX, int chunkZ)
-        {
-            try
-            {
-                // 16x16x256 的区块
-                const int sectionCount = 16;
-                const int sectionHeight = 16;
-
-                for (int sectionY = 0; sectionY < sectionCount; sectionY++)
-                {
-                    for (int y = 0; y < sectionHeight; y++)
+                    for (int by = (int)Math.Floor(y); by <= (int)Math.Floor(y + height); by++)
                     {
-                        int worldY = sectionY * sectionHeight + y;
-
-                        for (int z = 0; z < 16; z++)
+                        byte block = world.GetBlock(new WorldManager.BlockPos(bx, by, bz));
+                        if (block != 0) // Not air
                         {
-                            for (int x = 0; x < 16; x++)
-                            {
-                                int worldX = chunkX * 16 + x;
-                                int worldZ = chunkZ * 16 + z;
-
-                                BlockType block = GenerateBlockAt(worldX, worldY, worldZ);
-
-                                // 将方块数据写入区块（需要调用原生函数）
-                                // SetBlockInChunk(chunkX, chunkZ, worldY, x, y, z, block);
-                            }
+                            return true;
                         }
                     }
                 }
-
-                return true;
             }
-            catch (System.Exception e)
+            return false;
+        }
+
+        /// <summary>
+        /// Update camera
+        /// </summary>
+        private void UpdateCamera()
+        {
+            // Camera position is at player eyes (1.62 blocks above feet)
+            // Camera rotation matches player yaw/pitch
+            // This would sync with the rendering engine
+        }
+
+        /// <summary>
+        /// Check block interaction (raycast)
+        /// </summary>
+        private void CheckBlockInteraction()
+        {
+            targetedBlock = null;
+
+            float yawRad = cameraYaw * (float)Math.PI / 180f;
+            float pitchRad = cameraPitch * (float)Math.PI / 180f;
+
+            // Direction vector from camera rotation
+            float dirX = (float)(Math.Sin(yawRad) * Math.Cos(pitchRad));
+            float dirY = (float)Math.Sin(pitchRad);
+            float dirZ = (float)(Math.Cos(yawRad) * Math.Cos(pitchRad));
+
+            // Raycast
+            float step = 0.1f;
+            for (float d = 0; d < reachDistance; d += step)
             {
-                Debug.LogError($"Chunk generation failed: {e.Message}");
-                return false;
+                float x = playerEntity.PosX + dirX * d;
+                float y = playerEntity.PosY + 1.62f + dirY * d; // Eye level
+                float z = playerEntity.PosZ + dirZ * d;
+
+                var blockPos = new WorldManager.BlockPos(
+                    (int)Math.Floor(x),
+                    (int)Math.Floor(y),
+                    (int)Math.Floor(z)
+                );
+
+                byte block = world.GetBlock(blockPos);
+                if (block != 0)
+                {
+                    targetedBlock = blockPos;
+                    break;
+                }
             }
         }
 
         /// <summary>
-        /// 生成指定位置的方块类型
+        /// Break targeted block
         /// </summary>
-        private BlockType GenerateBlockAt(int x, int y, int z)
+        public void BreakTargetedBlock()
         {
-            // 简单的地形生成
-            if (y < 0) return BlockType.Air;
-            if (y > 60) return BlockType.Air;
+            if (targetedBlock.HasValue)
+            {
+                world.SetBlock(targetedBlock.Value, 0); // Set to air
+                WorldManager.Debug.LogInfo($"Broke block at {targetedBlock.Value}");
+                targetedBlock = null;
+            }
+        }
 
-            // 简单的平面地形（实际应使用噪声）
-            if (y == 60) return BlockType.GrassBlock;
-            if (y > 50 && y < 60) return BlockType.Dirt;
-            if (y <= 50) return BlockType.Stone;
+        /// <summary>
+        /// Place block at targeted position
+        /// </summary>
+        public void PlaceBlock(byte blockType)
+        {
+            if (targetedBlock.HasValue)
+            {
+                var pos = targetedBlock.Value;
+                // Place block adjacent to targeted block
+                world.SetBlock(new WorldManager.BlockPos(pos.X + 1, pos.Y, pos.Z), blockType);
+                WorldManager.Debug.LogInfo($"Placed block at {pos.X + 1}, {pos.Y}, {pos.Z}");
+            }
+        }
 
-            return BlockType.Air;
+        /// <summary>
+        /// Get player entity
+        /// </summary>
+        public WorldManager.Entity GetPlayerEntity()
+        {
+            return playerEntity;
+        }
+
+        /// <summary>
+        /// Get player position
+        /// </summary>
+        public (float x, float y, float z) GetPosition()
+        {
+            return (playerEntity.PosX, playerEntity.PosY, playerEntity.PosZ);
+        }
+
+        /// <summary>
+        /// Get camera rotation
+        /// </summary>
+        public (float yaw, float pitch) GetCameraRotation()
+        {
+            return (cameraYaw, cameraPitch);
+        }
+
+        /// <summary>
+        /// Is player on ground
+        /// </summary>
+        public bool IsGrounded()
+        {
+            return isGrounded;
         }
     }
 }

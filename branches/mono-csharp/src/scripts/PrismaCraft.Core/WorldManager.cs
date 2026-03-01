@@ -1,393 +1,451 @@
-// PrismaCraft.Core - C# 核心库
-// 对应 Minecraft: net.minecraft.* 的核心类
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace PrismaCraft.Core
 {
     /// <summary>
-    /// 方块坐标 - 对应 Minecraft: BlockPos
-    /// </summary>
-    public struct BlockPos
-    {
-        public int X { get; set; }
-        public int Y { get; set; }
-        public int Z { get; set; }
-
-        public BlockPos(int x, int y, int z)
-        {
-            X = x;
-            Y = y;
-            Z = z;
-        }
-
-        // 计算在区块段内的一维索引
-        public int GetIndexInSection()
-        {
-            return (Y & 15) << 8 | (Z & 15) << 4 | (X & 15);
-        }
-
-        // 从一维索引创建
-        public static BlockPos FromIndexInSection(int index)
-        {
-            return new BlockPos(
-                index & 15,
-                (index >> 8) & 15,
-                (index >> 4) & 15
-            );
-        }
-
-        public override bool Equals(object obj)
-        {
-            if (obj is BlockPos other)
-            {
-                return X == other.X && Y == other.Y && Z == other.Z;
-            }
-            return false;
-        }
-
-        public override int GetHashCode()
-        {
-            return X ^ (Y << 8) ^ (Z << 16);
-        }
-
-        public static bool operator ==(BlockPos left, BlockPos right)
-        {
-            return left.Equals(right);
-        }
-
-        public static bool operator !=(BlockPos left, BlockPos right)
-        {
-            return !left.Equals(right);
-        }
-
-        public static BlockPos operator +(BlockPos left, BlockPos right)
-        {
-            return new BlockPos(left.X + right.X, left.Y + right.Y, left.Z + right.Z);
-        }
-
-        // 六个面方向
-        public BlockPos North() => new BlockPos(X, Y, Z - 1);
-        public BlockPos South() => new BlockPos(X, Y, Z + 1);
-        public BlockPos East() => new BlockPos(X + 1, Y, Z);
-        public BlockPos West() => new BlockPos(X - 1, Y, Z);
-        public BlockPos Up() => new BlockPos(X, Y + 1, Z);
-        public BlockPos Down() => new BlockPos(X, Y - 1, Z);
-    }
-
-    /// <summary>
-    /// 区块坐标 - 对应 Minecraft: ChunkPos
-    /// </summary>
-    public struct ChunkPos
-    {
-        public int X { get; set; }
-        public int Z { get; set; }
-
-        public ChunkPos(int x, int z)
-        {
-            X = x;
-            Z = z;
-        }
-
-        public ChunkPos(BlockPos pos)
-        {
-            X = pos.X >> 4;
-            if (pos.X < 0 && (pos.X & 15) != 0) X--;
-            Z = pos.Z >> 4;
-            if (pos.Z < 0 && (pos.Z & 15) != 0) Z--;
-        }
-
-        // 计算区块键值
-        public long ToLong()
-        {
-            return (long)X & 0xFFFFFFFFL | ((long)Z & 0xFFFFFFFFL) << 32;
-        }
-
-        public override bool Equals(object obj)
-        {
-            if (obj is ChunkPos other)
-            {
-                return X == other.X && Z == other.Z;
-            }
-            return false;
-        }
-
-        public override int GetHashCode()
-        {
-            return ToLong().GetHashCode();
-        }
-
-        public static bool operator ==(ChunkPos left, ChunkPos right)
-        {
-            return left.Equals(right);
-        }
-
-        public static bool operator !=(ChunkPos left, ChunkPos right)
-        {
-            return !left.Equals(right);
-        }
-    }
-
-    /// <summary>
-    /// 方块类型 - 对应 Minecraft: Block
-    /// </summary>
-    public enum BlockType : byte
-    {
-        Air = 0,
-        Stone = 1,
-        GrassBlock = 2,
-        Dirt = 3,
-        Cobblestone = 4,
-        OakPlanks = 5,
-        OakSapling = 6,
-        Bedrock = 7,
-        Water = 8,
-        Lava = 10,
-        Sand = 12,
-        Gravel = 13,
-        GoldOre = 14,
-        IronOre = 15,
-        CoalOre = 16,
-        OakLog = 17,
-        OakLeaves = 18,
-        Glass = 20,
-        LapisOre = 21,
-        LapisBlock = 22,
-        Sandstone = 24
-    }
-
-    /// <summary>
-    /// 世界管理器 - 对应 Minecraft: Level
+    /// World manager - handles chunk loading, generation, and world operations
+    /// Corresponds to: net.minecraft.server.level.ServerLevel
     /// </summary>
     public class WorldManager
     {
-        private static WorldManager instance;
-        private readonly World nativeWorld;
+        // World properties
+        private string worldName;
+        private long seed;
+        private int worldHeight = 256;
+        private int seaLevel = 64;
 
-        private WorldManager()
-        {
-            // 初始化原生世界
-            nativeWorld = new World();
-        }
+        // Chunk storage
+        private ConcurrentDictionary<ChunkPos, LevelChunk> chunks = new();
+        private readonly object chunkLock = new object();
 
-        public static WorldManager Instance
+        // Entity management
+        private Dictionary<int, Entity> entities = new();
+        private int nextEntityId = 1;
+
+        // World generator
+        private WorldGenerator generator;
+
+        // Time
+        private long dayTime = 0;
+        private const float DAY_LENGTH_TICKS = 24000f;
+
+        // Spawn point
+        private BlockPos spawnPoint = new BlockPos(0, 64, 0);
+
+        /// <summary>
+        /// Block position structure
+        /// Corresponds to: net.minecraft.core.BlockPos
+        /// </summary>
+        public struct BlockPos
         {
-            get
+            public int X, Y, Z;
+
+            public BlockPos(int x, int y, int z)
             {
-                if (instance == null)
-                {
-                    instance = new WorldManager();
-                }
-                return instance;
+                X = x;
+                Y = y;
+                Z = z;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is BlockPos pos && X == pos.X && Y == pos.Y && Z == pos.Z;
+            }
+
+            public override int GetHashCode()
+            {
+                return HashCode.Combine(X, Y, Z);
+            }
+
+            public override string ToString()
+            {
+                return $"({X}, {Y}, {Z})";
             }
         }
 
         /// <summary>
-        /// 获取指定位置的方块
+        /// Chunk position structure
+        /// Corresponds to: net.minecraft.core.ChunkPos
         /// </summary>
-        public BlockType GetBlock(int x, int y, int z)
+        public struct ChunkPos
         {
-            byte blockType;
-            uint stateId;
-            WorldManager_GetBlock(x, y, z, out blockType, out stateId);
-            return (BlockType)blockType;
+            public int X, Z;
+
+            public ChunkPos(int x, int z)
+            {
+                X = x;
+                Z = z;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is ChunkPos pos && X == pos.X && Z == pos.Z;
+            }
+
+            public override int GetHashCode()
+            {
+                return HashCode.Combine(X, Z);
+            }
+
+            public override string ToString()
+            {
+                return $"[{X}, {Z}]";
+            }
         }
 
         /// <summary>
-        /// 设置指定位置的方块
+        /// Chunk data container
+        /// Corresponds to: net.minecraft.world.level.chunk.LevelChunk
         /// </summary>
-        public void SetBlock(int x, int y, int z, BlockType blockType)
+        public class LevelChunk
         {
-            WorldManager_SetBlock(x, y, z, (byte)blockType, 0);
+            public ChunkPos Pos;
+            public byte[] Blocks; // 16x256x16 = 65536 blocks
+            public byte[] Metadata;
+            public byte[] SkyLight;
+            public byte[] BlockLight;
+            public bool IsLoaded;
+            public bool IsDirty;
+
+            public LevelChunk(ChunkPos pos)
+            {
+                Pos = pos;
+                Blocks = new byte[16 * 256 * 16];
+                Metadata = new byte[16 * 256 * 16 / 2]; // 4 bits per block
+                SkyLight = new byte[16 * 256 * 16 / 2];
+                BlockLight = new byte[16 * 256 * 16 / 2];
+                IsLoaded = false;
+                IsDirty = true;
+            }
+
+            public int GetIndex(int x, int y, int z)
+            {
+                return y << 8 | z << 4 | x; // y * 256 + z * 16 + x
+            }
+
+            public byte GetBlock(int x, int y, int z)
+            {
+                return Blocks[GetIndex(x, y, z)];
+            }
+
+            public void SetBlock(int x, int y, int z, byte block)
+            {
+                Blocks[GetIndex(x, y, z)] = block;
+                IsDirty = true;
+            }
         }
 
         /// <summary>
-        /// 加载区块
+        /// Entity base class
+        /// Corresponds to: net.minecraft.world.entity.Entity
         /// </summary>
-        public void LoadChunk(int chunkX, int chunkZ)
+        public class Entity
         {
-            WorldManager_LoadChunk(chunkX, chunkZ);
+            public int Id;
+            public string Uuid;
+            public string Name;
+
+            public float PosX, PosY, PosZ;
+            public float VelX, VelY, VelZ;
+            public float Yaw, Pitch;
+
+            public bool IsOnGround;
+            public bool IsRemoved;
+
+            public WorldManager World;
+
+            public virtual void Tick()
+            {
+                // Base tick logic
+            }
         }
 
         /// <summary>
-        /// 卸载区块
+        /// Input system
         /// </summary>
-        public void UnloadChunk(int chunkX, int chunkZ)
+        public static class Input
         {
-            WorldManager_UnloadChunk(chunkX, chunkZ);
-        }
+            private static bool[] keyStates = new bool[256];
+            private static bool[] keyPrevStates = new bool[256];
+            private static float mouseDeltaX, mouseDeltaY;
+            private static int mouseX, mouseY;
+            private static bool mouseLocked = false;
 
-        // ========== P/Invoke 到原生代码 ==========
+            public static bool IsKeyDown(int key) => keyStates[key];
+            public static bool IsKeyPressed(int key) => keyStates[key] && !keyPrevStates[key];
+            public static bool IsKeyReleased(int key) => !keyStates[key] && keyPrevStates[key];
+            public static float MouseDeltaX => mouseDeltaX;
+            public static float MouseDeltaY => mouseDeltaY;
+            public static int MouseX => mouseX;
+            public static int MouseY => mouseY;
+            public static bool MouseLocked => mouseLocked;
 
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern void WorldManager_GetBlock(
-            int x, int y, int z,
-            out byte blockType,
-            out uint stateId
-        );
+            public static void SetKeyState(int key, bool state) => keyStates[key] = state;
+            public static void UpdateKeyStates()
+            {
+                Array.Copy(keyStates, keyPrevStates, 256);
+                mouseDeltaX = 0;
+                mouseDeltaY = 0;
+            }
 
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern void WorldManager_SetBlock(
-            int x, int y, int z,
-            byte blockType,
-            uint stateId
-        );
+            public static void SetMousePosition(int x, int y)
+            {
+                if (mouseLocked)
+                {
+                    mouseDeltaX += x - mouseX;
+                    mouseDeltaY += y - mouseY;
+                }
+                mouseX = x;
+                mouseY = y;
+            }
 
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern void WorldManager_LoadChunk(int chunkX, int chunkZ);
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern void WorldManager_UnloadChunk(int chunkX, int chunkZ);
-
-        // 原生世界类（内部类）
-        private class World
-        {
-            // 这个类只是占位符，实际实现在 C++ 中
-        }
-    }
-
-    /// <summary>
-    /// 输入系统 - 对应 Minecraft: Options / Input
-    /// </summary>
-    public static class Input
-    {
-        /// <summary>
-        /// 检查键是否按下
-        /// </summary>
-        public static bool IsKeyDown(KeyCode keyCode)
-        {
-            return Input_IsKeyDown((int)keyCode);
+            public static void SetMouseLocked(bool locked) => mouseLocked = locked;
         }
 
         /// <summary>
-        /// 检查键是否刚刚按下
+        /// Time system
         /// </summary>
-        public static bool IsKeyPressed(KeyCode keyCode)
+        public static class Time
         {
-            return Input_IsKeyPressed((int)keyCode);
+            private static float deltaTime = 0;
+            private static long currentTime = 0;
+            private static long lastTime = 0;
+
+            public static float DeltaTime => deltaTime;
+            public static long CurrentTime => currentTime;
+
+            public static void Update()
+            {
+                lastTime = currentTime;
+                currentTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (lastTime > 0)
+                {
+                    deltaTime = (currentTime - lastTime) / 1000f;
+                }
+            }
         }
 
         /// <summary>
-        /// 检查键是否刚刚释放
+        /// Debug/Logging system
         /// </summary>
-        public static bool IsKeyReleased(KeyCode keyCode)
+        public static class Debug
         {
-            return Input_IsKeyReleased((int)keyCode);
+            public enum LogLevel
+            {
+                Info,
+                Warning,
+                Error,
+                Debug
+            }
+
+            public static void Log(string message, LogLevel level = LogLevel.Info)
+            {
+                string prefix = level switch
+                {
+                    LogLevel.Warning => "[WARNING] ",
+                    LogLevel.Error => "[ERROR] ",
+                    LogLevel.Debug => "[DEBUG] ",
+                    _ => "[INFO] "
+                };
+                Console.WriteLine(prefix + message);
+            }
+
+            public static void LogInfo(string message) => Log(message, LogLevel.Info);
+            public static void LogWarning(string message) => Log(message, LogLevel.Warning);
+            public static void LogError(string message) => Log(message, LogLevel.Error);
+            public static void LogDebug(string message) => Log(message, LogLevel.Debug);
         }
 
         /// <summary>
-        /// 检查鼠标按钮是否按下
+        /// Multi-threaded chunk generator
         /// </summary>
-        public static bool IsMouseButtonPressed(int button)
+        public class WorldGenerator
         {
-            return Input_IsMouseButtonPressed(button);
+            private WorldManager world;
+            private int threadCount = 4;
+            private Thread[] threads;
+            private ConcurrentQueue<ChunkPos> generationQueue = new();
+            private CancellationTokenSource cts = new();
+
+            public WorldGenerator(WorldManager world)
+            {
+                this.world = world;
+            }
+
+            public void Start()
+            {
+                threads = new Thread[threadCount];
+                for (int i = 0; i < threadCount; i++)
+                {
+                    threads[i] = new Thread(GenerationLoop);
+                    threads[i].IsBackground = true;
+                    threads[i].Start();
+                }
+            }
+
+            public void Stop()
+            {
+                cts.Cancel();
+                foreach (var thread in threads)
+                {
+                    thread.Join();
+                }
+            }
+
+            public void RequestChunkGeneration(ChunkPos pos)
+            {
+                generationQueue.Enqueue(pos);
+            }
+
+            private void GenerationLoop()
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    if (generationQueue.TryDequeue(out ChunkPos pos))
+                    {
+                        GenerateChunk(pos);
+                    }
+                    else
+                    {
+                        Thread.Sleep(10);
+                    }
+                }
+            }
+
+            private void GenerateChunk(ChunkPos pos)
+            {
+                var chunk = new LevelChunk(pos);
+
+                // Simple terrain generation (flat with some noise)
+                for (int x = 0; x < 16; x++)
+                {
+                    for (int z = 0; z < 16; z++)
+                    {
+                        int worldX = pos.X * 16 + x;
+                        int worldZ = pos.Z * 16 + z;
+
+                        // Simple height calculation
+                        int height = 64;
+                        for (int y = 0; y < height; y++)
+                        {
+                            byte block = (byte)(y < height - 4 ? 1 : 3); // Stone/Dirt
+                            if (y == height - 1) block = 2; // Grass
+                            chunk.SetBlock(x, y, z, block);
+                        }
+                    }
+                }
+
+                chunk.IsLoaded = true;
+                world.chunks[pos] = chunk;
+                Debug.LogDebug($"Generated chunk at {pos}");
+            }
         }
 
-        // ========== P/Invoke ==========
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern bool Input_IsKeyDown(int keyCode);
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern bool Input_IsKeyPressed(int keyCode);
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern bool Input_IsKeyReleased(int keyCode);
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern bool Input_IsMouseButtonPressed(int button);
-    }
-
-    /// <summary>
-    /// 键码定义
-    /// </summary>
-    public enum KeyCode
-    {
-        // 字母键
-        A = 0x41,
-        B, C, D, E, F, G, H, I, J, K, L, M,
-        N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-
-        // 数字键
-        D0 = 0x30, D1, D2, D3, D4, D5, D6, D7, D8, D9,
-
-        // 功能键
-        F1 = 0x70, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-
-        // 特殊键
-        Space = 0x20,
-        Enter = 0x0D,
-        Escape = 0x1B,
-        Tab = 0x09,
-        Backspace = 0x08,
-        Shift = 0x10,
-        Control = 0x11,
-        Alt = 0x12,
-
-        // 方向键
-        Left = 0x25,
-        Up = 0x26,
-        Right = 0x27,
-        Down = 0x28
-    }
-
-    /// <summary>
-    /// 时间系统 - 对应 Minecraft: MinecraftClient.timer
-    /// </summary>
-    public static class Time
-    {
         /// <summary>
-        /// 获取两帧之间的时间（秒）
+        /// Constructor
         /// </summary>
-        public static float DeltaTime
+        public WorldManager(string name, long seed)
         {
-            get { return Time_GetDeltaTime(); }
+            worldName = name;
+            this.seed = seed;
+            generator = new WorldGenerator(this);
+            generator.Start();
+
+            Debug.LogInfo($"World '{name}' created with seed {seed}");
         }
 
         /// <summary>
-        /// 获取游戏运行的总时间（秒）
+        /// Get or load a chunk
         /// </summary>
-        public static float TimeSinceStartup
+        public LevelChunk GetChunk(int x, int z)
         {
-            get { return Time_GetTime(); }
+            ChunkPos pos = new ChunkPos(x, z);
+            if (!chunks.TryGetValue(pos, out LevelChunk chunk))
+            {
+                chunk = new LevelChunk(pos);
+                chunks[pos] = chunk;
+                generator.RequestChunkGeneration(pos);
+            }
+            return chunk;
         }
 
-        // ========== P/Invoke ==========
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern float Time_GetDeltaTime();
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern float Time_GetTime();
-    }
-
-    /// <summary>
-    /// 调试日志 - 对应 Minecraft: Logger
-    /// </summary>
-    public static class Debug
-    {
-        public static void Log(object message)
+        /// <summary>
+        /// Get block at position
+        /// </summary>
+        public byte GetBlock(BlockPos pos)
         {
-            Debug_Log(message?.ToString() ?? "null");
+            int chunkX = pos.X >> 4;
+            int chunkZ = pos.Z >> 4;
+            var chunk = GetChunk(chunkX, chunkZ);
+            return chunk.GetBlock(pos.X & 15, pos.Y, pos.Z & 15);
         }
 
-        public static void LogWarning(object message)
+        /// <summary>
+        /// Set block at position
+        /// </summary>
+        public void SetBlock(BlockPos pos, byte block)
         {
-            Debug_LogWarning(message?.ToString() ?? "null");
+            int chunkX = pos.X >> 4;
+            int chunkZ = pos.Z >> 4;
+            var chunk = GetChunk(chunkX, chunkZ);
+            chunk.SetBlock(pos.X & 15, pos.Y, pos.Z & 15, block);
         }
 
-        public static void LogError(object message)
+        /// <summary>
+        /// Update world
+        /// </summary>
+        public void Update()
         {
-            Debug_LogError(message?.ToString() ?? "null");
+            dayTime++;
+            Time.Update();
+
+            // Update all entities
+            foreach (var entity in entities.Values)
+            {
+                if (!entity.IsRemoved)
+                {
+                    entity.Tick();
+                }
+            }
+
+            // Remove removed entities
+            entities = new Dictionary<int, Entity>(entities);
+            foreach (var kvp in entities)
+            {
+                if (kvp.Value.IsRemoved)
+                {
+                    entities.Remove(kvp.Key);
+                }
+            }
         }
 
-        // ========== P/Invoke ==========
+        /// <summary>
+        /// Get spawn point
+        /// </summary>
+        public BlockPos GetSpawnPoint()
+        {
+            return spawnPoint;
+        }
 
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern void Debug_Log(string message);
+        /// <summary>
+        /// Get day time (0-24000)
+        /// </summary>
+        public long GetDayTime()
+        {
+            return dayTime % 24000;
+        }
 
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern void Debug_LogWarning(string message);
-
-        [System.Runtime.InteropServices.DllImport("PrismaCraftNative")]
-        private static extern void Debug_LogError(string message);
+        /// <summary>
+        /// Shutdown
+        /// </summary>
+        public void Shutdown()
+        {
+            generator.Stop();
+            Debug.LogInfo("WorldManager shut down");
+        }
     }
 }
