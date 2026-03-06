@@ -2,9 +2,12 @@
 
 #include "ChunkMeshComponent.h"
 #include "../world/level/chunk/LevelChunk.h"
+#include "../world/level/Level.h"
+#include <PrismaEngine/graphic/TextureAtlas.h>
 #include <glm/glm.hpp>
 #include <array>
 #include <functional>
+#include <string>
 
 namespace PrismaCraft {
 
@@ -46,30 +49,49 @@ public:
     ~ChunkMeshGenerator() = default;
 
     /**
+     * @brief 设置方块纹理管理器
+     * @param manager 纹理管理器指针
+     */
+    void setBlockTextureManager(PrismaEngine::Graphic::BlockTextureManager* manager) {
+        blockTextureManager_ = manager;
+    }
+
+    /**
+     * @brief 获取方块纹理管理器
+     */
+    PrismaEngine::Graphic::BlockTextureManager* getBlockTextureManager() const {
+        return blockTextureManager_;
+    }
+
+    /**
      * @brief 生成区块网格
+     * @param level 世界级别（用于跨区块查询）
      * @param chunk 区块数据
      * @param options 生成选项
      * @return 网格数据
      */
-    ChunkMeshComponent::MeshData generateMesh(const LevelChunk& chunk, const GenerationOptions& options = GenerationOptions());
+    ChunkMeshComponent::MeshData generateMesh(const Level* level, const LevelChunk& chunk, const GenerationOptions& options = GenerationOptions());
 
     /**
      * @brief 生成单个区块切片的网格
+     * @param level 世界级别（用于跨区块查询）
+     * @param chunk 当前区块
      * @param section 区块切片
      * @param chunkYOffset 区块 Y 偏移
      * @param options 生成选项
      * @return 网格数据
      */
-    ChunkMeshComponent::MeshData generateSectionMesh(const ChunkSection& section, int chunkYOffset, const GenerationOptions& options = GenerationOptions());
+    ChunkMeshComponent::MeshData generateSectionMesh(const Level* level, const LevelChunk& chunk, const ChunkSection& section, int chunkYOffset, const GenerationOptions& options = GenerationOptions());
 
     /**
      * @brief 检查方块面是否可见
-     * @param chunk 区块
-     * @param x, y, z 方块坐标
+     * @param level 世界级别（用于跨区块查询）
+     * @param chunk 当前区块
+     * @param x, y, z 方块世界坐标
      * @param direction 面方向
      * @return 是否可见
      */
-    static bool isFaceVisible(const LevelChunk& chunk, int x, int y, int z, FaceDirection direction);
+    static bool isFaceVisible(const Level* level, int x, int y, int z, FaceDirection direction);
 
     /**
      * @brief 获取面法线
@@ -78,16 +100,26 @@ public:
 
     /**
      * @brief 获取面的 UV 坐标
+     * @param direction 面方向
+     * @param blockName 方块名称
+     * @return UV 坐标数组（4个顶点）
      */
-    static std::array<glm::vec2, 4> getFaceUVs(FaceDirection direction);
+    std::array<glm::vec2, 4> getFaceUVs(FaceDirection direction, const std::string& blockName) const;
 
 private:
     /**
      * @brief 添加方块面到网格
+     * @param mesh 网格数据
+     * @param pos 方块位置
+     * @param direction 面方向
+     * @param blockID 方块 ID
+     * @param blockName 方块名称（用于获取纹理）
+     * @param options 生成选项
      */
     void addFace(ChunkMeshComponent::MeshData& mesh,
                  const glm::vec3& pos, FaceDirection direction,
-                 uint8_t blockID, const GenerationOptions& options);
+                 uint8_t blockID, const std::string& blockName,
+                 const GenerationOptions& options);
 
     /**
      * @brief 检查相邻方块是否遮挡
@@ -107,6 +139,17 @@ private:
                 const glm::vec3& normal,
                 const std::array<glm::vec2, 4>& uvs,
                 uint8_t blockID);
+
+    /**
+     * @brief 将面方向转换为 BlockTextureManager 的 FaceDirection
+     */
+    static PrismaEngine::Graphic::BlockTextureManager::FaceDirection toTextureManagerFaceDirection(FaceDirection direction);
+
+private:
+    /**
+     * @brief 方块纹理管理器（不持有所有权）
+     */
+    PrismaEngine::Graphic::BlockTextureManager* blockTextureManager_ = nullptr;
 };
 
 } // namespace PrismaCraft

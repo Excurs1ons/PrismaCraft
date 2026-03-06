@@ -1,5 +1,11 @@
 # PrismaCraft
 
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)
+![CMake](https://img.shields.io/badge/CMake-3.20%2B-blue.svg)
+![Vulkan](https://img.shields.io/badge/Vulkan-1.3%2B-purple.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20Android-lightgrey.svg)
+
 A Minecraft recreation powered by PrismaEngine
 
 ## 快速开始

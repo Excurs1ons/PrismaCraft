@@ -41,12 +41,14 @@ public:
 private:
     // Index calculation
     static int getIndex(int x, int y, int z) {
-        return y << 8 | z << 4 | x; // y * 256 + z * 16 + x
+        return (y << 8) | (z << 4) | x; // y * 256 + z * 16 + x
     }
 
     // Storage
-    std::vector<uint8_t> data; // Packed indices
-    std::vector<const class BlockState*> palette; // Palette of states
+    // Data-Oriented Optimization (Linus):
+    // Use flat array to avoid pointer chasing and heap allocation overhead
+    std::array<uint16_t, SECTION_SIZE> data; // Flat array of palette indices
+    std::vector<const class BlockState*> palette; // Flat lookup table
     const class BlockState* defaultState;
 };
 

@@ -7,7 +7,7 @@ namespace PrismaCraft {
 // ChunkMeshGenerator 实现
 // ============================================================================
 
-ChunkMeshComponent::MeshData ChunkMeshGenerator::generateMesh(const LevelChunk& chunk, const GenerationOptions& options) {
+ChunkMeshComponent::MeshData ChunkMeshGenerator::generateMesh(const Level* level, const LevelChunk& chunk, const GenerationOptions& options) {
     ChunkMeshComponent::MeshData meshData;
 
     // 遍历所有区块切片
@@ -18,7 +18,7 @@ ChunkMeshComponent::MeshData ChunkMeshGenerator::generateMesh(const LevelChunk& 
         }
 
         // 生成该切片的网格
-        ChunkMeshComponent::MeshData sectionMesh = generateSectionMesh(*section, sectionIndex * 16, options);
+        ChunkMeshComponent::MeshData sectionMesh = generateSectionMesh(level, chunk, *section, sectionIndex * 16, options);
 
         // 合并到总网格
         meshData.vertices.insert(meshData.vertices.end(),
@@ -32,8 +32,12 @@ ChunkMeshComponent::MeshData ChunkMeshGenerator::generateMesh(const LevelChunk& 
     return meshData;
 }
 
-ChunkMeshComponent::MeshData ChunkMeshGenerator::generateSectionMesh(const ChunkSection& section, int chunkYOffset, const GenerationOptions& options) {
+ChunkMeshComponent::MeshData ChunkMeshGenerator::generateSectionMesh(const Level* level, const LevelChunk& chunk, const ChunkSection& section, int chunkYOffset, const GenerationOptions& options) {
     ChunkMeshComponent::MeshData meshData;
+
+    // 计算区块的世界坐标
+    int chunkWorldX = chunk.getPos().x * 16;
+    int chunkWorldZ = chunk.getPos().z * 16;
 
     // 遍历切片中的所有方块
     for (int y = 0; y < ChunkSection::SECTION_HEIGHT; ++y) {
@@ -47,19 +51,25 @@ ChunkMeshComponent::MeshData ChunkMeshGenerator::generateSectionMesh(const Chunk
                 }
 
                 // 计算世界坐标
-                glm::vec3 blockPos(x, y + chunkYOffset, z);
+                int worldX = chunkWorldX + x;
+                int worldY = y + chunkYOffset;
+                int worldZ = chunkWorldZ + z;
+                glm::vec3 blockPos(worldX, worldY, worldZ);
                 uint8_t blockID = static_cast<uint8_t>(blockState.getBlock()->getId());
+
+                // 获取方块名称（用于纹理查找）
+                const std::string& blockName = blockState.getBlock()->getName();
 
                 // 检查并添加每个面
                 for (int face = 0; face < 6; ++face) {
                     FaceDirection direction = static_cast<FaceDirection>(face);
 
                     // 如果启用面剔除，检查是否可见
-                    if (options.enableFaceCulling && !isFaceVisible(section, x, y + chunkYOffset, z, direction)) {
+                    if (options.enableFaceCulling && !isFaceVisible(level, worldX, worldY, worldZ, direction)) {
                         continue;
                     }
 
-                    addFace(meshData, blockPos, direction, blockID, options);
+                    addFace(meshData, blockPos, direction, blockID, blockName, options);
                 }
             }
         }
@@ -68,8 +78,8 @@ ChunkMeshComponent::MeshData ChunkMeshGenerator::generateSectionMesh(const Chunk
     return meshData;
 }
 
-bool ChunkMeshGenerator::isFaceVisible(const LevelChunk& chunk, int x, int y, int z, FaceDirection direction) {
-    // 获取相邻方块的坐标
+bool ChunkMeshGenerator::isFaceVisible(const Level* level, int x, int y, int z, FaceDirection direction) {
+    // 计算相邻方块的世界坐标
     int nx = x, ny = y, nz = z;
 
     switch (direction) {
@@ -81,11 +91,24 @@ bool ChunkMeshGenerator::isFaceVisible(const LevelChunk& chunk, int x, int y, in
         case FaceDirection::EAST:   nx = x + 1; break;
     }
 
-    // 获取相邻方块
-    const BlockState& neighbor = chunk.getBlockState(nx, ny, nz);
+    // 通过 Level 查询相邻方块（自动处理跨区块边界）
+    const BlockState& neighbor = level->getBlockState(BlockPos(nx, ny, nz));
 
-    // 如果相邻方块是空气或非固体方块，则该面可见
-    return !neighbor.isAir() && !neighbor.blocksMotion();
+    // 如果相邻方块是空气 OR 不阻挡运动，则当前面可见
+    // 修复原 Bug：原逻辑是 && 应该改为 ||
+    return neighbor.isAir() || !neighbor.blocksMotion();
+}
+
+PrismaEngine::Graphic::BlockTextureManager::FaceDirection ChunkMeshGenerator::toTextureManagerFaceDirection(FaceDirection direction) {
+    switch (direction) {
+        case FaceDirection::TOP:    return PrismaEngine::Graphic::BlockTextureManager::FaceDirection::TOP;
+        case FaceDirection::BOTTOM: return PrismaEngine::Graphic::BlockTextureManager::FaceDirection::BOTTOM;
+        case FaceDirection::NORTH:  return PrismaEngine::Graphic::BlockTextureManager::FaceDirection::NORTH;
+        case FaceDirection::SOUTH:  return PrismaEngine::Graphic::BlockTextureManager::FaceDirection::SOUTH;
+        case FaceDirection::WEST:   return PrismaEngine::Graphic::BlockTextureManager::FaceDirection::WEST;
+        case FaceDirection::EAST:   return PrismaEngine::Graphic::BlockTextureManager::FaceDirection::EAST;
+    }
+    return PrismaEngine::Graphic::BlockTextureManager::FaceDirection::TOP;
 }
 
 glm::vec3 ChunkMeshGenerator::getFaceNormal(FaceDirection direction) {
@@ -100,23 +123,37 @@ glm::vec3 ChunkMeshGenerator::getFaceNormal(FaceDirection direction) {
     return glm::vec3(0, 1, 0);
 }
 
-std::array<glm::vec2, 4> ChunkMeshGenerator::getFaceUVs(FaceDirection direction) {
-    // 默认 UV 坐标（整个纹理）
+std::array<glm::vec2, 4> ChunkMeshGenerator::getFaceUVs(FaceDirection direction, const std::string& blockName) const {
+    // 如果没有纹理管理器，返回默认 UV
+    if (!blockTextureManager_) {
+        return {
+            glm::vec2(0, 0),
+            glm::vec2(1, 0),
+            glm::vec2(1, 1),
+            glm::vec2(0, 1)
+        };
+    }
+
+    // 从纹理管理器获取该方块面的 UV 坐标
+    glm::vec4 uv = blockTextureManager_->getFaceUV(blockName, toTextureManagerFaceDirection(direction));
+
+    // 返回四个顶点的 UV 坐标（对应顶点顺序：左上、右上、右下、左下）
     return {
-        glm::vec2(0, 0),
-        glm::vec2(1, 0),
-        glm::vec2(1, 1),
-        glm::vec2(0, 1)
+        glm::vec2(uv.x, uv.y),  // 左上 (u0, v0)
+        glm::vec2(uv.z, uv.y),  // 右上 (u1, v0)
+        glm::vec2(uv.z, uv.w),  // 右下 (u1, v1)
+        glm::vec2(uv.x, uv.w)   // 左下 (u0, v1)
     };
 }
 
 void ChunkMeshGenerator::addFace(ChunkMeshComponent::MeshData& mesh,
                                  const glm::vec3& pos, FaceDirection direction,
-                                 uint8_t blockID, const GenerationOptions& options) {
+                                 uint8_t blockID, const std::string& blockName,
+                                 const GenerationOptions& options) {
     // 获取面的顶点和 UV
     auto vertices = getFaceVertices(pos, direction);
     auto normal = getFaceNormal(direction);
-    auto uvs = getFaceUVs(direction);
+    auto uvs = getFaceUVs(direction, blockName);  // 使用新方法
 
     // 添加四边形
     addQuad(mesh, vertices, normal, uvs, blockID);

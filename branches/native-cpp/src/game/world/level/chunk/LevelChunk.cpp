@@ -11,12 +11,12 @@ namespace PrismaCraft {
 
 PalettedContainer::PalettedContainer()
     : defaultState(nullptr) {
-    data.resize(SECTION_SIZE);
+    data.fill(0);
 }
 
 PalettedContainer::PalettedContainer(const class BlockState& defaultState)
     : defaultState(&defaultState) {
-    data.resize(SECTION_SIZE);
+    data.fill(0);
     fill(defaultState);
 }
 

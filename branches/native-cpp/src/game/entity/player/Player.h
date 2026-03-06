@@ -75,6 +75,23 @@ public:
      */
     void move(double dx, double dy, double dz);
 
+    /**
+     * @brief 获取碰撞检测盒列表
+     * @param box 要检测的 AABB
+     * @return 碰撞的方块 AABB 列表
+     */
+    std::vector<AABB> getCollidingBoxes(const AABB& box) const;
+
+    /**
+     * @brief 处理玩家移动（带碰撞检测）
+     */
+    void moveWithCollision(double dx, double dy, double dz);
+
+    /**
+     * @brief 刷新碰撞盒尺寸
+     */
+    void refreshDimensions();
+
 private:
     PlayerType gameMode = PlayerType::SURVIVAL;
 
